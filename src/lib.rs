@@ -5,7 +5,11 @@
 
 pub mod alert;
 pub mod builder;
+#[cfg(feature = "relay")]
+pub mod obs_link;
 pub mod platform;
+#[cfg(feature = "relay")]
+pub mod relay;
 pub mod seen;
 pub mod triggers;
 

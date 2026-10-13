@@ -39,6 +39,10 @@ const TWITCH: &[EventKind] = &[
     kind("hype train", "Hype train (level)", Detail::Amount("")),
     kind("ban", "Ban", Detail::None),
     kind("timeout", "Timeout", Detail::None),
+    // From Theater API · Twitch (Theater Reader doesn't see these)
+    kind("follow", "Follow", Detail::None),
+    kind("stream start", "Stream started", Detail::None),
+    kind("stream end", "Stream ended", Detail::None),
 ];
 
 const KICK: &[EventKind] = &[

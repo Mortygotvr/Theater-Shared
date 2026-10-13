@@ -9,7 +9,8 @@
 //! ```text
 //! kind      redeem, cheer, sub, resub, gift, gift_upgrade, raid, follow,
 //!           superchat, supersticker, member, hype_train, timeout, ban,
-//!           stream_start, stream_end, donation, pledge, other
+//!           stream_start, stream_end, donation, pledge, pledge_change,
+//!           pledge_end, shop_order, commission, other
 //! platform  twitch, kick, youtube… ("" when unknown)
 //! channel   the channel it came from ("" when unknown)
 //! user      who did it ("" for nobody in particular: a hype train, the stream)
@@ -18,7 +19,7 @@
 //! image     their picture, or the redeem's
 //! amount    bits, viewers, gifted subs, the hype train's level, money (as a number)
 //! currency  for money: "USD", "$"… as the platform gave it, else ""
-//! title     a redeem's title
+//! title     a redeem's title (a shop order: what was bought)
 //! reward_id a redeem's id on its platform
 //! cost      a redeem's points
 //! tier      "Tier 1", "Tier 2", "Tier 3", "Prime" or ""
