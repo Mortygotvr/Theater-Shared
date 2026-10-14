@@ -16,6 +16,11 @@
 //! - **Outside**: something outside OBS already serves the port (the Theater
 //!   Reader app): this plugin connects to it as an app, and emits
 //!   `theater_event` itself.
+//! - **Guest** (the Theater API plugins, `start_guest`): never serves the
+//!   port, which is a Reader's (one at a time: the Theater Reader plugin or
+//!   app). Each message goes through the Theater plugin hosting in OBS when
+//!   there is one, else only to `theater_event`, where Theater Scene and the
+//!   Control Panel hear it inside OBS.
 //!
 //! Every message an app sends reaches the other apps.
 
@@ -42,6 +47,8 @@ pub enum Role {
     InObs(String),
     /// Something outside OBS serves the port
     Outside,
+    /// Never serves the port: through the host in OBS, else theater_event
+    Guest,
 }
 
 #[derive(Clone, Debug)]
@@ -146,12 +153,48 @@ pub fn start(name: &'static str, port: u16, lan: bool, runtime: &tokio::runtime:
     Role::Host
 }
 
+/// Takes the guest's role, for a plugin that sends but never serves the port
+/// (call once, from obs_module_load). It works whichever plugin loads first:
+/// each message looks for a host in OBS when it's sent.
+/// - `on_app`: what an app connected to the host sent
+pub fn start_guest(name: &'static str, log: fn(&str), on_app: Option<fn(&str)>) -> Role {
+    {
+        let mut s = STATE.lock();
+        if s.role != Role::None {
+            return s.role.clone();
+        }
+        s.name = name;
+        s.log = log;
+        s.on_app = on_app;
+    }
+    let Some(obs) = obs_link::obs() else { return Role::None };
+    // Declared here too, so they exist whether or not a host loads after
+    obs.add_signal(c"void theater_event(string json)");
+    obs.add_signal(c"void theater_relay_app(string json)");
+    obs.connect(c"theater_relay_app", from_app_signal);
+    STATE.lock().role = Role::Guest;
+    UP.store(true, Ordering::SeqCst);
+    log("[Relay] Sending through Theater Reader when its plugin hosts the relay, else inside OBS (theater_event)");
+    Role::Guest
+}
+
+/// The Theater plugin hosting the relay in OBS, if one does
+pub fn host_in_obs() -> Option<String> {
+    let obs = obs_link::obs()?;
+    let mut cd = Calldata::new();
+    let found = obs.call(c"theater_relay_host", &mut cd);
+    let name = obs.get_string(&cd, c"name");
+    obs.free(&mut cd);
+    found.then(|| if name.is_empty() { "another Theater plugin".into() } else { name })
+}
+
 pub fn role_name(role: &Role) -> String {
     match role {
         Role::None => "Nobody".into(),
         Role::Host => STATE.lock().name.to_string(),
         Role::InObs(name) => name.clone(),
         Role::Outside => "An app outside OBS".into(),
+        Role::Guest => host_in_obs().unwrap_or_else(|| "OBS itself (Theater Scene, the Control Panel)".into()),
     }
 }
 
@@ -174,6 +217,17 @@ pub fn send(text: &str) {
             }
             if let Some(obs) = obs_link::obs() {
                 obs.signal_string(c"theater_event", c"json", text);
+            }
+        }
+        Role::Guest => {
+            if let Some(obs) = obs_link::obs() {
+                let mut cd = Calldata::new();
+                obs.set_string(&mut cd, c"json", text);
+                let through_host = obs.call(c"theater_relay_send", &mut cd);
+                obs.free(&mut cd);
+                if !through_host {
+                    obs.signal_string(c"theater_event", c"json", text);
+                }
             }
         }
         Role::None => {}
