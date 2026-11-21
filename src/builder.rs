@@ -126,6 +126,11 @@ fn lists_ui(ui: &mut egui::Ui, id: egui::Id, st: &mut BuilderState) -> String {
             Some(Detail::Amount(_)) => {
                 ui.weak("any amount").on_hover_text("Amounts never limit a trigger: what fires gets it as {amount}");
             }
+            Some(Detail::Text) => {
+                ui.label("Text");
+                ui.add(egui::TextEdit::singleline(&mut st.parts.detail).hint_text("!hydrate").desired_width(130.0))
+                    .on_hover_text("Fires when a chat message is exactly this (any case). Anyone in chat can, once per cooldown.");
+            }
             _ => {}
         }
     });

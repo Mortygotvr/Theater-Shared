@@ -6,6 +6,11 @@
 //! "Twitch mortygotvr redeem Hydrate"; a pattern has `*` for "any". Amounts
 //! (bits, Super Chats, hype train levels) are never part of it: any amount
 //! matches, and it's handed on to what fires (`{amount}`).
+//!
+//! Chat commands: "Twitch * chat !hydrate" fires when a chat message *is*
+//! that text (the whole message, any case and spacing; never a wildcard), so
+//! a viewer can't fire anything else by typing (chat_fires). What fires
+//! them keeps a cooldown (the app's).
 
 use crate::Platform;
 
@@ -16,6 +21,8 @@ pub enum Detail {
     Title,
     /// An amount, then these words (" bits")
     Amount(&'static str),
+    /// A chat message's whole text (chat commands)
+    Text,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +40,7 @@ const fn kind(words: &'static str, label: &'static str, detail: Detail) -> Event
 
 const TWITCH: &[EventKind] = &[
     kind("redeem", "Channel points redeem", Detail::Title),
+    kind("chat", "Chat message (is exactly…)", Detail::Text),
     kind("cheer", "Cheer (bits)", Detail::Amount(" bits")),
     kind("sub", "Sub / resub / gift", Detail::None),
     kind("raid", "Raid", Detail::None),
@@ -47,6 +55,7 @@ const TWITCH: &[EventKind] = &[
 
 const KICK: &[EventKind] = &[
     kind("redeem", "Channel points redeem", Detail::Title),
+    kind("chat", "Chat message (is exactly…)", Detail::Text),
     kind("follow", "Follow", Detail::None),
     kind("sub", "Sub", Detail::None),
     kind("gift sub", "Gifted subs", Detail::None),
@@ -59,6 +68,7 @@ const KICK: &[EventKind] = &[
 ];
 
 const YOUTUBE: &[EventKind] = &[
+    kind("chat", "Chat message (is exactly…)", Detail::Text),
     kind("super chat", "Super Chat (amount)", Detail::Amount("")),
     kind("super sticker", "Super Sticker (amount)", Detail::Amount("")),
     kind("member", "New member", Detail::None),
@@ -119,6 +129,15 @@ impl Parts {
                 out.push_str(" *");
                 out.push_str(after);
             }
+            Detail::Text => {
+                // A command's text, or nothing yet (never "any message")
+                let text = chat_text(&self.detail);
+                if text.is_empty() {
+                    return String::new();
+                }
+                out.push(' ');
+                out.push_str(&text);
+            }
         }
         out
     }
@@ -176,13 +195,51 @@ pub fn parse(pattern: &str) -> Option<Parts> {
             }
             String::new()
         }
+        Detail::Text => {
+            // A command's whole text ("*" or none: not a chat command)
+            if detail_words.is_empty() || detail_words.iter().any(|w| is_any(w)) {
+                return None;
+            }
+            detail_words.join(" ")
+        }
     };
     Some(Parts { platform, channel, event: kind.words.to_string(), detail })
 }
 
+/// A chat command's text as it's compared: trimmed, single spaces, no commas
+/// (a trigger list is split at them)
+pub fn chat_text(text: &str) -> String {
+    text.replace(',', " ").split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Whether a chat message fires `pattern`: a chat command (Platform channel
+/// chat text) whose platform and channel fit ("*" any) and whose text is the
+/// whole message (any case and spacing). `chat` is the message's own trigger,
+/// "Twitch mortygotvr chat". Nothing but chat commands: a viewer's message
+/// never fires a redeem, sub or any other trigger.
+pub fn chat_fires(pattern: &str, chat: &str, message: &str) -> bool {
+    let Some(p) = parse(pattern) else { return false };
+    if p.event != "chat" {
+        return false;
+    }
+    let words: Vec<&str> = chat.split_whitespace().collect();
+    if words.len() != 3 || !words[2].eq_ignore_ascii_case("chat") {
+        return false;
+    }
+    let Some(platform) = platform_named(words[0]) else { return false };
+    if p.platform.is_some_and(|want| want != platform) {
+        return false;
+    }
+    if !p.channel.is_empty() && !p.channel.trim_start_matches(['#', '@']).eq_ignore_ascii_case(words[1].trim_start_matches(['#', '@'])) {
+        return false;
+    }
+    let text = chat_text(message);
+    !text.is_empty() && chat_text(&p.detail).to_lowercase() == text.to_lowercase()
+}
+
 /// An event's trigger (a Theater Reader alert's, e.g. "Twitch mortygotvr
 /// cheer 500 bits") in the lists, amount left out: 🎯 Catch next. None
-/// for chat and what the lists don't have.
+/// for chat (its text isn't in the trigger) and what the lists don't have.
 pub fn from_event(trigger: &str) -> Option<Parts> {
     let words: Vec<&str> = trigger.split_whitespace().collect();
     if words.len() < 3 {
@@ -197,6 +254,9 @@ pub fn from_event(trigger: &str) -> Option<Parts> {
             rest.len() >= kw.len() && kw.iter().zip(rest).all(|(a, b)| a.eq_ignore_ascii_case(b))
         })
         .max_by_key(|k| k.words.len())?;
+    if kind.detail == Detail::Text {
+        return None;
+    }
     let detail_words = &rest[kind.words.split(' ').count()..];
     let detail = if kind.detail == Detail::Title { detail_words.join(" ") } else { String::new() };
     let channel = match words[1] {
@@ -245,10 +305,31 @@ mod tests {
         assert_eq!(parse("twitch * REDEEM Hydrate").unwrap().compose(), "Twitch * redeem Hydrate");
         assert_eq!(parse("Twitch * redeem Throw {1}"), None, "a wildcard inside a title: text");
         assert_eq!(parse("Twitch * cheer 500 bits"), None, "an exact amount: text");
-        assert_eq!(parse("Twitch * chat"), None, "no chat triggers");
+        assert_eq!(parse("Twitch * chat"), None, "a chat command needs its text");
+        assert_eq!(parse("Twitch * chat *"), None, "never any message");
+        assert_eq!(parse("Twitch * chat !hydrate").unwrap().compose(), "Twitch * chat !hydrate");
+        assert_eq!(parse("Kick mortygotvr chat good  night").unwrap().compose(), "Kick mortygotvr chat good night");
         assert_eq!(parse("Twitch * sub extra"), None);
         assert_eq!(parse("Something else"), None);
         assert_eq!(parse("Twitch {1} cheer {amount} bits").unwrap().compose(), "Twitch * cheer * bits");
+    }
+
+    #[test]
+    fn chat_commands_fire_on_exactly_their_text() {
+        assert_eq!(parts(Some(Platform::Twitch), "", "chat", "").compose(), "", "no text: no trigger yet");
+        assert_eq!(parts(Some(Platform::Twitch), "", "chat", " !hydrate ").compose(), "Twitch * chat !hydrate");
+        let p = "Twitch * chat !hydrate";
+        assert!(chat_fires(p, "Twitch mortygotvr chat", "!hydrate"));
+        assert!(chat_fires(p, "Twitch mortygotvr chat", "  !HYDRATE "));
+        assert!(!chat_fires(p, "Twitch mortygotvr chat", "!hydrate now"), "the whole message");
+        assert!(!chat_fires(p, "Twitch mortygotvr chat", "lol chat !hydrate"), "no wildcard sneaking in");
+        assert!(!chat_fires(p, "Kick mortygotvr chat", "!hydrate"), "another platform");
+        assert!(chat_fires("Twitch mortygotvr chat !hydrate", "Twitch MortyGotVR chat", "!hydrate"));
+        assert!(!chat_fires("Twitch someone chat !hydrate", "Twitch mortygotvr chat", "!hydrate"), "another channel");
+        assert!(chat_fires("* * chat good night", "YouTube @me chat", "Good   night"));
+        // A viewer typing a trigger fires nothing else
+        assert!(!chat_fires("Twitch * redeem Hydrate", "Twitch mortygotvr chat", "Twitch * redeem Hydrate"));
+        assert!(!chat_fires("Twitch * chat !hydrate", "Twitch mortygotvr whisper", "!hydrate"), "whispers aren't chat");
     }
 
     #[test]
